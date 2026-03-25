@@ -1,0 +1,67 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: iCloud_ReSyncTool.exe
+            build_path: dist/iCloud_ReSyncTool.exe
+          - os: ubuntu-latest
+            artifact: iCloud_ReSyncTool-linux
+            build_path: dist/iCloud_ReSyncTool
+          - os: macos-latest
+            artifact: iCloud_ReSyncTool-macos
+            build_path: dist/iCloud_ReSyncTool
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        run: pyinstaller --onefile --windowed --name "iCloud_ReSyncTool" icloud_resync.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.build_path }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/iCloud_ReSyncTool.exe/iCloud_ReSyncTool.exe
+            artifacts/iCloud_ReSyncTool-linux/iCloud_ReSyncTool
+            artifacts/iCloud_ReSyncTool-macos/iCloud_ReSyncTool
