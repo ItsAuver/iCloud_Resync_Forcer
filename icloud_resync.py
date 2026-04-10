@@ -16,17 +16,26 @@ import threading
 import urllib.request
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from pathlib import Path
 from datetime import datetime
 
 VERSION = "1.0.0"
 GITHUB_REPO = "ItsAuver/iCloud_Resync_Forcer"
 
-try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
-    HAS_DND = True
-except ImportError:
-    HAS_DND = False
+HAS_WINDND = False
+HAS_TKDND = False
+if sys.platform == "win32":
+    try:
+        import windnd
+        HAS_WINDND = True
+    except ImportError:
+        pass
+
+if not HAS_WINDND:
+    try:
+        from tkinterdnd2 import DND_FILES, TkinterDnD
+        HAS_TKDND = True
+    except ImportError:
+        pass
 
 
 class TouchApp:
@@ -48,10 +57,12 @@ class TouchApp:
         ttk.Button(frame_top, text="Browse…", command=self.browse).pack(side="right")
 
         # --- Drag-and-drop support ---
-        if HAS_DND:
+        if HAS_WINDND:
+            windnd.hook_dropfiles(root, func=self._on_drop_windnd)
+        elif HAS_TKDND:
             for widget in (root, entry, frame_top):
                 widget.drop_target_register(DND_FILES)
-                widget.dnd_bind("<<Drop>>", self._on_drop)
+                widget.dnd_bind("<<Drop>>", self._on_drop_tkdnd)
 
         # --- Options ---
         frame_opts = ttk.LabelFrame(root, text="Options", padding=10)
@@ -87,6 +98,7 @@ class TouchApp:
 
         self.log = tk.Text(frame_log, height=8, state="disabled",
                            font=("Consolas", 9), wrap="word")
+        self.log.tag_configure("error", foreground="red")
         scrollbar = ttk.Scrollbar(frame_log, command=self.log.yview)
         self.log.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
@@ -94,37 +106,50 @@ class TouchApp:
 
     # ── helpers ────────────────────────────────────────────
 
-    def log_msg(self, msg):
+    def log_msg(self, msg, error=False):
         self.log.configure(state="normal")
-        self.log.insert("end", msg + "\n")
+        self.log.insert("end", msg + "\n", "error" if error else ())
         self.log.see("end")
         self.log.configure(state="disabled")
 
-    def _on_drop(self, event):
+    def _set_dropped_path(self, path):
+        """Resolve a dropped path (file or folder) to a directory and set it."""
+        if os.path.isfile(path):
+            path = os.path.dirname(path)
+        if os.path.isdir(path):
+            self.folder_var.set(path)
+            return True
+        return False
+
+    def _on_drop_windnd(self, paths):
+        """Callback for windnd — receives a list of bytes paths."""
+        for raw in paths:
+            path = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+            if self._set_dropped_path(path):
+                return
+
+    def _on_drop_tkdnd(self, event):
+        """Callback for tkinterdnd2 — receives an event with .data string."""
         raw = event.data.strip()
         # tkdnd may return multiple paths: brace-wrapped or space-separated
-        paths = []
+        parsed = []
         i = 0
         while i < len(raw):
             if raw[i] == "{":
                 end = raw.index("}", i)
-                paths.append(raw[i + 1 : end])
-                i = end + 2  # skip '} '
+                parsed.append(raw[i + 1 : end])
+                i = end + 2
             elif raw[i] == " ":
                 i += 1
             else:
                 end = raw.find(" ", i)
                 if end == -1:
                     end = len(raw)
-                paths.append(raw[i:end])
+                parsed.append(raw[i:end])
                 i = end + 1
 
-        for path in paths:
-            # If a file was dropped, use its parent folder
-            if os.path.isfile(path):
-                path = os.path.dirname(path)
-            if os.path.isdir(path):
-                self.folder_var.set(path)
+        for path in parsed:
+            if self._set_dropped_path(path):
                 return
 
     def browse(self):
@@ -178,7 +203,7 @@ class TouchApp:
                     touched += 1
                 except Exception as e:
                     errors += 1
-                    self.root.after(0, self.log_msg, f"  ERR: {fpath} — {e}")
+                    self.root.after(0, lambda m=f"  ERR: {fpath} — {e}": self.log_msg(m, error=True))
 
         summary = f"Done. Touched {touched} file(s), skipped {skipped}, errors {errors}."
         self.root.after(0, self.log_msg, summary)
@@ -365,7 +390,7 @@ def _background_update_check(root):
 
 
 def main():
-    root = TkinterDnD.Tk() if HAS_DND else tk.Tk()
+    root = TkinterDnD.Tk() if HAS_TKDND else tk.Tk()
     # Windows DPI awareness for crisp text
     try:
         from ctypes import windll
