@@ -160,10 +160,12 @@ class TouchApp:
         self.target_listbox.delete(0, "end")
 
     def _on_drop_windnd(self, paths):
-        """Callback for windnd — receives a list of bytes paths."""
+        """Callback for windnd — called from a background thread."""
+        decoded = []
         for raw in paths:
-            path = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-            self.add_target(path)
+            decoded.append(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw)
+        # windnd calls this from a non-main thread; schedule on the main thread
+        self.root.after(0, lambda: [self.add_target(p) for p in decoded])
 
     def _on_drop_tkdnd(self, event):
         """Callback for tkinterdnd2 — receives an event with .data string."""
