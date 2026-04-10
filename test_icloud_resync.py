@@ -37,11 +37,10 @@ def tk_root(_tk_root_shared):
 @pytest.fixture
 def app(tk_root):
     """Instantiate TouchApp with DnD disabled on a real Tk root."""
-    with mock.patch.object(icloud_resync, "HAS_WINDND", False), \
+    with mock.patch.object(icloud_resync.sys, "platform", "testing"), \
          mock.patch.object(icloud_resync, "HAS_TKDND", False):
         a = icloud_resync.TouchApp(tk_root)
     yield a
-    # Clean up for next test
     a.clear_targets()
 
 
@@ -285,34 +284,36 @@ class TestTargetManagement:
 
 # ── Drag-and-drop handlers ───────────────────────────────────
 
-class TestOnDropWindnd:
-    def _drop(self, app, paths):
-        """Simulate a windnd drop and process the scheduled callback."""
-        app._on_drop_windnd(paths)
-        app.root.update()
+class TestWin32DnDQueue:
+    """Test the native Win32 DnD queue-based handler."""
+
+    def _simulate_drop(self, app, paths):
+        """Simulate files arriving via the drop queue and process them."""
+        app._drop_queue.put(paths)
+        # Drain the queue the same way poll_drops does
+        while not app._drop_queue.empty():
+            files = app._drop_queue.get_nowait()
+            for path in files:
+                app.add_target(path)
 
     def test_adds_all_dropped_paths(self, app, tmp_path):
         f1 = tmp_path / "a.txt"
         f2 = tmp_path / "b.txt"
         f1.write_text("a")
         f2.write_text("b")
-        self._drop(app, [str(f1).encode(), str(f2).encode()])
+        self._simulate_drop(app, [str(f1), str(f2)])
         assert len(app.targets) == 2
 
-    def test_bytes_paths(self, app, tmp_path):
-        self._drop(app, [str(tmp_path).encode("utf-8")])
-        assert len(app.targets) == 1
-
-    def test_string_paths(self, app, tmp_path):
-        self._drop(app, [str(tmp_path)])
+    def test_adds_folder(self, app, tmp_path):
+        self._simulate_drop(app, [str(tmp_path)])
         assert len(app.targets) == 1
 
     def test_skips_invalid(self, app, tmp_path):
-        self._drop(app, [b"/nonexistent", str(tmp_path).encode()])
+        self._simulate_drop(app, ["/nonexistent", str(tmp_path)])
         assert len(app.targets) == 1
 
-    def test_empty_list(self, app):
-        self._drop(app, [])
+    def test_empty_drop(self, app):
+        self._simulate_drop(app, [])
         assert len(app.targets) == 0
 
 

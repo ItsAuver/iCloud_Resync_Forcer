@@ -9,6 +9,8 @@ import os
 import sys
 import time
 import json
+import queue
+import ctypes
 import shutil
 import subprocess
 import tempfile
@@ -21,21 +23,12 @@ from datetime import datetime
 VERSION = "1.0.0"
 GITHUB_REPO = "ItsAuver/iCloud_Resync_Forcer"
 
-HAS_WINDND = False
 HAS_TKDND = False
-if sys.platform == "win32":
-    try:
-        import windnd
-        HAS_WINDND = True
-    except ImportError:
-        pass
-
-if not HAS_WINDND:
-    try:
-        from tkinterdnd2 import DND_FILES, TkinterDnD
-        HAS_TKDND = True
-    except ImportError:
-        pass
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    HAS_TKDND = True
+except ImportError:
+    pass
 
 
 class TouchApp:
@@ -46,6 +39,7 @@ class TouchApp:
         self.root.resizable(False, False)
         self.running = False
         self.targets = []  # list of file/folder paths
+        self._drop_queue = queue.Queue()
 
         # --- Header with Guide button ---
         frame_header = ttk.Frame(root)
@@ -80,8 +74,8 @@ class TouchApp:
         ttk.Button(btn_frame, text="Clear All", command=self.clear_targets).pack(side="left")
 
         # --- Drag-and-drop support ---
-        if HAS_WINDND:
-            windnd.hook_dropfiles(root, func=self._on_drop_windnd)
+        if sys.platform == "win32":
+            self._setup_win32_dnd(root)
         elif HAS_TKDND:
             for widget in (root, self.target_listbox, frame_top):
                 widget.drop_target_register(DND_FILES)
@@ -159,13 +153,83 @@ class TouchApp:
         self.targets.clear()
         self.target_listbox.delete(0, "end")
 
-    def _on_drop_windnd(self, paths):
-        """Callback for windnd — called from a background thread."""
-        decoded = []
-        for raw in paths:
-            decoded.append(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw)
-        # windnd calls this from a non-main thread; schedule on the main thread
-        self.root.after(0, lambda: [self.add_target(p) for p in decoded])
+    def _setup_win32_dnd(self, root):
+        """Set up native Windows WM_DROPFILES drag-and-drop.
+
+        Uses a WNDPROC subclass that puts dropped paths into a queue,
+        then a tkinter after-poll picks them up safely on the main thread.
+        This avoids the GIL crash that windnd causes.
+        """
+        from ctypes import wintypes
+
+        WM_DROPFILES = 0x233
+        GWL_WNDPROC = -4
+
+        self._drop_queue = queue.Queue()
+
+        hwnd = root.winfo_id()
+        ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
+
+        WNDPROC_TYPE = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p, ctypes.c_uint,
+            ctypes.c_void_p, ctypes.c_void_p,
+        )
+
+        DragQueryFileW = ctypes.windll.shell32.DragQueryFileW
+        DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                   ctypes.c_wchar_p, ctypes.c_uint]
+        DragQueryFileW.restype = ctypes.c_uint
+
+        DragFinish = ctypes.windll.shell32.DragFinish
+        DragFinish.argtypes = [ctypes.c_void_p]
+
+        CallWindowProcW = ctypes.windll.user32.CallWindowProcW
+        CallWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_uint, ctypes.c_void_p,
+                                    ctypes.c_void_p]
+        CallWindowProcW.restype = ctypes.c_long
+
+        drop_queue = self._drop_queue
+
+        def wndproc(local_hwnd, msg, wparam, lparam):
+            if msg == WM_DROPFILES:
+                # Only ctypes calls here — no Python object mutation, no tkinter
+                count = DragQueryFileW(wparam, 0xFFFFFFFF, None, 0)
+                buf = ctypes.create_unicode_buffer(260)
+                files = []
+                for i in range(count):
+                    DragQueryFileW(wparam, i, buf, 260)
+                    files.append(buf.value)
+                DragFinish(wparam)
+                drop_queue.put(files)
+                return 0
+            return CallWindowProcW(old_wndproc, local_hwnd, msg, wparam, lparam)
+
+        # Must keep a reference so the callback isn't garbage-collected
+        self._wndproc_ref = WNDPROC_TYPE(wndproc)
+
+        if ctypes.sizeof(ctypes.c_void_p) == 8:
+            _Get = ctypes.windll.user32.GetWindowLongPtrW
+            _Set = ctypes.windll.user32.SetWindowLongPtrW
+            _Get.argtypes = [wintypes.HWND, ctypes.c_int]
+            _Get.restype = ctypes.c_void_p
+            _Set.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+            _Set.restype = ctypes.c_void_p
+        else:
+            _Get = ctypes.windll.user32.GetWindowLongW
+            _Set = ctypes.windll.user32.SetWindowLongW
+
+        old_wndproc = _Get(hwnd, GWL_WNDPROC)
+        _Set(hwnd, GWL_WNDPROC, self._wndproc_ref)
+
+        def poll_drops():
+            while not self._drop_queue.empty():
+                files = self._drop_queue.get_nowait()
+                for path in files:
+                    self.add_target(path)
+            root.after(50, poll_drops)
+
+        poll_drops()
 
     def _on_drop_tkdnd(self, event):
         """Callback for tkinterdnd2 — receives an event with .data string."""
