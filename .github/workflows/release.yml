@@ -39,10 +39,14 @@ jobs:
           pip install pyinstaller
 
       - name: Stamp version from tag
-        shell: bash
+        shell: python
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          sed -i "s/^VERSION = .*/VERSION = \"$TAG\"/" icloud_resync.py
+          import re, os
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          path = "icloud_resync.py"
+          text = open(path).read()
+          text = re.sub(r'^VERSION = .*', f'VERSION = "{tag}"', text, count=1, flags=re.MULTILINE)
+          open(path, "w").write(text)
 
       - name: Build executable
         run: pyinstaller --onefile --windowed --name "iCloud_ReSyncTool" icloud_resync.py
