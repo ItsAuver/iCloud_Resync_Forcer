@@ -286,28 +286,33 @@ class TestTargetManagement:
 # ── Drag-and-drop handlers ───────────────────────────────────
 
 class TestOnDropWindnd:
+    def _drop(self, app, paths):
+        """Simulate a windnd drop and process the scheduled callback."""
+        app._on_drop_windnd(paths)
+        app.root.update()
+
     def test_adds_all_dropped_paths(self, app, tmp_path):
         f1 = tmp_path / "a.txt"
         f2 = tmp_path / "b.txt"
         f1.write_text("a")
         f2.write_text("b")
-        app._on_drop_windnd([str(f1).encode(), str(f2).encode()])
+        self._drop(app, [str(f1).encode(), str(f2).encode()])
         assert len(app.targets) == 2
 
     def test_bytes_paths(self, app, tmp_path):
-        app._on_drop_windnd([str(tmp_path).encode("utf-8")])
+        self._drop(app, [str(tmp_path).encode("utf-8")])
         assert len(app.targets) == 1
 
     def test_string_paths(self, app, tmp_path):
-        app._on_drop_windnd([str(tmp_path)])
+        self._drop(app, [str(tmp_path)])
         assert len(app.targets) == 1
 
     def test_skips_invalid(self, app, tmp_path):
-        app._on_drop_windnd([b"/nonexistent", str(tmp_path).encode()])
+        self._drop(app, [b"/nonexistent", str(tmp_path).encode()])
         assert len(app.targets) == 1
 
     def test_empty_list(self, app):
-        app._on_drop_windnd([])
+        self._drop(app, [])
         assert len(app.targets) == 0
 
 
