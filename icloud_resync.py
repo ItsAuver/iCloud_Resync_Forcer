@@ -41,26 +41,39 @@ if not HAS_WINDND:
 class TouchApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("iCloud Re-Sync Tool")
-        self.root.geometry("540x420")
+        self.root.title(f"iCloud Re-Sync Tool  v{VERSION}")
+        self.root.geometry("540x500")
         self.root.resizable(False, False)
         self.running = False
+        self.targets = []  # list of file/folder paths
 
-        # --- Folder selection ---
-        frame_top = ttk.LabelFrame(root, text="Target Folder", padding=10)
+        # --- Target list ---
+        frame_top = ttk.LabelFrame(root, text="Targets (drag and drop files/folders here)", padding=10)
         frame_top.pack(fill="x", padx=12, pady=(12, 6))
 
-        self.folder_var = tk.StringVar()
-        entry = ttk.Entry(frame_top, textvariable=self.folder_var)
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        list_frame = ttk.Frame(frame_top)
+        list_frame.pack(fill="x")
 
-        ttk.Button(frame_top, text="Browse…", command=self.browse).pack(side="right")
+        self.target_listbox = tk.Listbox(list_frame, height=5, font=("Consolas", 9),
+                                         selectmode="extended")
+        list_scroll = ttk.Scrollbar(list_frame, command=self.target_listbox.yview)
+        self.target_listbox.configure(yscrollcommand=list_scroll.set)
+        self.target_listbox.pack(side="left", fill="x", expand=True)
+        list_scroll.pack(side="right", fill="y")
+
+        btn_frame = ttk.Frame(frame_top)
+        btn_frame.pack(fill="x", pady=(6, 0))
+
+        ttk.Button(btn_frame, text="Add Folder…", command=self.browse_folder).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text="Add Files…", command=self.browse_files).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text="Remove Selected", command=self.remove_selected).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text="Clear All", command=self.clear_targets).pack(side="left")
 
         # --- Drag-and-drop support ---
         if HAS_WINDND:
             windnd.hook_dropfiles(root, func=self._on_drop_windnd)
         elif HAS_TKDND:
-            for widget in (root, entry, frame_top):
+            for widget in (root, self.target_listbox, frame_top):
                 widget.drop_target_register(DND_FILES)
                 widget.dnd_bind("<<Drop>>", self._on_drop_tkdnd)
 
@@ -82,7 +95,11 @@ class TouchApp:
 
         self.btn_run = ttk.Button(frame_action, text="Touch All Files ▶",
                                   command=self.start)
-        self.btn_run.pack(side="left")
+        self.btn_run.pack(side="left", padx=(0, 4))
+
+        self.btn_restart_icloud = ttk.Button(frame_action, text="Restart iCloud",
+                                             command=self.restart_icloud)
+        self.btn_restart_icloud.pack(side="left")
 
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(frame_action, textvariable=self.status_var,
@@ -112,26 +129,35 @@ class TouchApp:
         self.log.see("end")
         self.log.configure(state="disabled")
 
-    def _set_dropped_path(self, path):
-        """Resolve a dropped path (file or folder) to a directory and set it."""
-        if os.path.isfile(path):
-            path = os.path.dirname(path)
-        if os.path.isdir(path):
-            self.folder_var.set(path)
+    def add_target(self, path):
+        """Add a file or folder path to the target list (no duplicates)."""
+        path = os.path.normpath(path)
+        if path not in self.targets and (os.path.isfile(path) or os.path.isdir(path)):
+            self.targets.append(path)
+            self.target_listbox.insert("end", path)
             return True
         return False
+
+    def remove_selected(self):
+        """Remove selected items from the target list."""
+        for idx in reversed(self.target_listbox.curselection()):
+            self.targets.pop(idx)
+            self.target_listbox.delete(idx)
+
+    def clear_targets(self):
+        """Remove all items from the target list."""
+        self.targets.clear()
+        self.target_listbox.delete(0, "end")
 
     def _on_drop_windnd(self, paths):
         """Callback for windnd — receives a list of bytes paths."""
         for raw in paths:
             path = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-            if self._set_dropped_path(path):
-                return
+            self.add_target(path)
 
     def _on_drop_tkdnd(self, event):
         """Callback for tkinterdnd2 — receives an event with .data string."""
         raw = event.data.strip()
-        # tkdnd may return multiple paths: brace-wrapped or space-separated
         parsed = []
         i = 0
         while i < len(raw):
@@ -149,18 +175,23 @@ class TouchApp:
                 i = end + 1
 
         for path in parsed:
-            if self._set_dropped_path(path):
-                return
+            self.add_target(path)
 
-    def browse(self):
+    def browse_folder(self):
         path = filedialog.askdirectory(title="Select folder to re-sync")
         if path:
-            self.folder_var.set(path)
+            self.add_target(path)
+
+    def browse_files(self):
+        paths = filedialog.askopenfilenames(title="Select files to re-sync")
+        for path in paths:
+            self.add_target(path)
 
     def start(self):
-        folder = self.folder_var.get().strip()
-        if not folder or not os.path.isdir(folder):
-            messagebox.showwarning("No folder", "Please select a valid folder first.")
+        if not self.targets:
+            messagebox.showwarning("No targets",
+                                   "Please add files or folders first.\n"
+                                   "Drag and drop, or use the Add buttons.")
             return
         if self.running:
             return
@@ -170,9 +201,10 @@ class TouchApp:
         self.progress.start(12)
         self.status_var.set("Working…")
 
-        threading.Thread(target=self.touch_files, args=(folder,), daemon=True).start()
+        targets = list(self.targets)
+        threading.Thread(target=self.touch_files, args=(targets,), daemon=True).start()
 
-    def touch_files(self, folder):
+    def touch_files(self, targets):
         recursive = self.recursive_var.get()
         include_hidden = self.hidden_var.get()
         touched = 0
@@ -183,27 +215,42 @@ class TouchApp:
         self.root.after(0, self.log_msg,
                         f"── Started at {datetime.now().strftime('%H:%M:%S')} ──")
         self.root.after(0, self.log_msg,
-                        f"Folder: {folder}  |  Recursive: {recursive}")
+                        f"Targets: {len(targets)}  |  Recursive: {recursive}")
 
-        walker = os.walk(folder) if recursive else [(folder, [], os.listdir(folder))]
-
-        for dirpath, dirnames, filenames in walker:
-            # Optionally skip hidden dirs
-            if not include_hidden:
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-
-            for fname in filenames:
+        for target in targets:
+            if os.path.isfile(target):
+                # Touch individual file directly
+                fname = os.path.basename(target)
                 if not include_hidden and fname.startswith("."):
                     skipped += 1
                     continue
-
-                fpath = os.path.join(dirpath, fname)
                 try:
-                    os.utime(fpath, (now, now))
+                    os.utime(target, (now, now))
                     touched += 1
                 except Exception as e:
                     errors += 1
-                    self.root.after(0, lambda m=f"  ERR: {fpath} — {e}": self.log_msg(m, error=True))
+                    self.root.after(0, lambda m=f"  ERR: {target} — {e}": self.log_msg(m, error=True))
+
+            elif os.path.isdir(target):
+                # Walk folder
+                walker = os.walk(target) if recursive else [(target, [], os.listdir(target))]
+
+                for dirpath, dirnames, filenames in walker:
+                    if not include_hidden:
+                        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+                    for fname in filenames:
+                        if not include_hidden and fname.startswith("."):
+                            skipped += 1
+                            continue
+
+                        fpath = os.path.join(dirpath, fname)
+                        try:
+                            os.utime(fpath, (now, now))
+                            touched += 1
+                        except Exception as e:
+                            errors += 1
+                            self.root.after(0, lambda m=f"  ERR: {fpath} — {e}": self.log_msg(m, error=True))
 
         summary = f"Done. Touched {touched} file(s), skipped {skipped}, errors {errors}."
         self.root.after(0, self.log_msg, summary)
@@ -216,8 +263,138 @@ class TouchApp:
         self.status_var.set(summary)
         self.running = False
 
+    def restart_icloud(self):
+        if self.running:
+            return
+        self.running = True
+        self.btn_restart_icloud.configure(state="disabled")
+        self.btn_run.configure(state="disabled")
+        self.status_var.set("Restarting iCloud…")
+        threading.Thread(target=self._restart_icloud_worker, daemon=True).start()
+
+    def _restart_icloud_worker(self):
+        self.root.after(0, self.log_msg,
+                        f"── iCloud restart at {datetime.now().strftime('%H:%M:%S')} ──")
+
+        killed = _kill_icloud_processes()
+        if killed:
+            self.root.after(0, self.log_msg,
+                            f"Stopped {len(killed)} process(es): {', '.join(killed)}")
+            # Brief pause to let processes fully exit
+            time.sleep(2)
+        else:
+            self.root.after(0, self.log_msg, "No running iCloud processes found.")
+
+        exe = _find_icloud_exe()
+        if exe:
+            try:
+                subprocess.Popen([exe], creationflags=0x00000008 if sys.platform == "win32" else 0)
+                self.root.after(0, self.log_msg, f"Started: {exe}")
+                msg = "iCloud restarted."
+            except Exception as e:
+                self.root.after(0, lambda m=f"  ERR: Could not start iCloud — {e}": self.log_msg(m, error=True))
+                msg = "iCloud stopped but failed to restart."
+        else:
+            self.root.after(0, lambda: self.log_msg(
+                "  Could not find iCloud executable to relaunch. "
+                "Please start iCloud manually.", error=True))
+            msg = "iCloud stopped. Relaunch manually."
+
+        self.root.after(0, self.log_msg, "")
+        self.root.after(0, self._finish_restart, msg)
+
+    def _finish_restart(self, msg):
+        self.btn_restart_icloud.configure(state="normal")
+        self.btn_run.configure(state="normal")
+        self.status_var.set(msg)
+        self.running = False
+
+
+# ── iCloud process helpers ────────────────────────────────────
+
+# Process names that belong to iCloud on Windows
+ICLOUD_PROCESS_NAMES = [
+    "iCloud.exe",
+    "iCloudDrive.exe",
+    "iCloudPhotos.exe",
+    "iCloudServices.exe",
+    "ApplePhotoStreams.exe",
+    "APSDaemon.exe",
+]
+
+
+def _kill_icloud_processes():
+    """Kill all running iCloud processes.  Returns list of names that were killed."""
+    if sys.platform != "win32":
+        return []
+    killed = []
+    for name in ICLOUD_PROCESS_NAMES:
+        result = subprocess.run(
+            ["taskkill", "/F", "/IM", name],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            killed.append(name)
+    return killed
+
+
+def _find_icloud_exe():
+    """Locate the iCloud executable to relaunch it."""
+    if sys.platform != "win32":
+        return None
+
+    # Desktop (MSI) install
+    candidates = [
+        os.path.expandvars(r"%ProgramFiles%\Apple\iCloud\iCloud.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Apple\Internet Services\iCloud.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Apple\Internet Services\iCloud.exe"),
+    ]
+
+    # Microsoft Store install — search WindowsApps for the package
+    win_apps = os.path.expandvars(r"%ProgramFiles%\WindowsApps")
+    if os.path.isdir(win_apps):
+        try:
+            for entry in os.listdir(win_apps):
+                if "AppleInc.iCloud" in entry:
+                    store_exe = os.path.join(win_apps, entry, "iCloud", "iCloud.exe")
+                    candidates.insert(0, store_exe)
+                    alt = os.path.join(win_apps, entry, "iCloud.exe")
+                    candidates.insert(1, alt)
+        except PermissionError:
+            pass
+
+    # Also try the shell start approach via App URI
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    # Fallback: launch via shell protocol (works for Store version)
+    try:
+        result = subprocess.run(
+            ["where.exe", "iCloud.exe"], capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip().splitlines()[0]
+    except Exception:
+        pass
+
+    return None
+
 
 # ── Auto-update helpers ──────────────────────────────────────
+
+def _cleanup_old_update_files():
+    """Remove leftover .old and .tmp files from a previous update."""
+    if not getattr(sys, "frozen", False):
+        return
+    exe_dir = os.path.dirname(sys.executable)
+    for name in os.listdir(exe_dir):
+        if name.endswith(".old") or name.endswith(".tmp"):
+            try:
+                os.remove(os.path.join(exe_dir, name))
+            except OSError:
+                pass
+
 
 def _parse_version(tag):
     """Turn 'v1.2.3' into (1, 2, 3) for comparison."""
@@ -294,8 +471,11 @@ def _apply_update(download_url, progress_cb=None, done_cb=None):
         if sys.platform == "win32":
             # Windows: can't overwrite a running exe, so rename-swap
             old_path = current_exe + ".old"
-            if os.path.exists(old_path):
-                os.remove(old_path)
+            try:
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+            except OSError:
+                pass  # locked from a prior update; will be cleaned up next launch
             os.rename(current_exe, old_path)
             shutil.move(tmp_path, current_exe)
         else:
@@ -390,6 +570,8 @@ def _background_update_check(root):
 
 
 def main():
+    _cleanup_old_update_files()
+
     root = TkinterDnD.Tk() if HAS_TKDND else tk.Tk()
     # Windows DPI awareness for crisp text
     try:

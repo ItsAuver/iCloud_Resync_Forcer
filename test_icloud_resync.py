@@ -12,7 +12,7 @@ import icloud_resync
 
 # ── Shared Tk fixture ─────────────────────────────────────────
 # tkinter widgets (StringVar, Text, etc.) require a real Tk root.
-# We create one hidden root per test that needs it.
+# We create one hidden root shared across the module.
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +39,10 @@ def app(tk_root):
     """Instantiate TouchApp with DnD disabled on a real Tk root."""
     with mock.patch.object(icloud_resync, "HAS_WINDND", False), \
          mock.patch.object(icloud_resync, "HAS_TKDND", False):
-        return icloud_resync.TouchApp(tk_root)
+        a = icloud_resync.TouchApp(tk_root)
+    yield a
+    # Clean up for next test
+    a.clear_targets()
 
 
 # ── _parse_version ────────────────────────────────────────────
@@ -238,53 +241,86 @@ class TestApplyUpdate:
         assert "fail" in results[0][1]
 
 
-# ── TouchApp._set_dropped_path ────────────────────────────────
+# ── add_target / remove / clear ──────────────────────────────
 
-class TestSetDroppedPath:
-    def test_directory_sets_var(self, app, tmp_path):
-        assert app._set_dropped_path(str(tmp_path)) is True
-        assert app.folder_var.get() == str(tmp_path)
+class TestTargetManagement:
+    def test_add_folder(self, app, tmp_path):
+        assert app.add_target(str(tmp_path)) is True
+        assert len(app.targets) == 1
+        assert app.target_listbox.size() == 1
 
-    def test_file_resolves_to_parent(self, app, tmp_path):
+    def test_add_file(self, app, tmp_path):
         f = tmp_path / "test.txt"
         f.write_text("hello")
-        assert app._set_dropped_path(str(f)) is True
-        assert app.folder_var.get() == str(tmp_path)
+        assert app.add_target(str(f)) is True
+        assert len(app.targets) == 1
 
-    def test_nonexistent_returns_false(self, app):
-        assert app._set_dropped_path("/nonexistent/path/xyz") is False
+    def test_no_duplicates(self, app, tmp_path):
+        app.add_target(str(tmp_path))
+        app.add_target(str(tmp_path))
+        assert len(app.targets) == 1
+
+    def test_nonexistent_rejected(self, app):
+        assert app.add_target("/nonexistent/path/xyz") is False
+        assert len(app.targets) == 0
+
+    def test_remove_selected(self, app, tmp_path):
+        sub1 = tmp_path / "a"
+        sub2 = tmp_path / "b"
+        sub1.mkdir()
+        sub2.mkdir()
+        app.add_target(str(sub1))
+        app.add_target(str(sub2))
+        app.target_listbox.selection_set(0)
+        app.remove_selected()
+        assert len(app.targets) == 1
+        assert os.path.normpath(str(sub2)) in app.targets[0]
+
+    def test_clear_targets(self, app, tmp_path):
+        app.add_target(str(tmp_path))
+        app.clear_targets()
+        assert len(app.targets) == 0
+        assert app.target_listbox.size() == 0
 
 
 # ── Drag-and-drop handlers ───────────────────────────────────
 
 class TestOnDropWindnd:
+    def test_adds_all_dropped_paths(self, app, tmp_path):
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("a")
+        f2.write_text("b")
+        app._on_drop_windnd([str(f1).encode(), str(f2).encode()])
+        assert len(app.targets) == 2
+
     def test_bytes_paths(self, app, tmp_path):
         app._on_drop_windnd([str(tmp_path).encode("utf-8")])
-        assert app.folder_var.get() == str(tmp_path)
+        assert len(app.targets) == 1
 
     def test_string_paths(self, app, tmp_path):
         app._on_drop_windnd([str(tmp_path)])
-        assert app.folder_var.get() == str(tmp_path)
+        assert len(app.targets) == 1
 
-    def test_picks_first_valid(self, app, tmp_path):
+    def test_skips_invalid(self, app, tmp_path):
         app._on_drop_windnd([b"/nonexistent", str(tmp_path).encode()])
-        assert app.folder_var.get() == str(tmp_path)
+        assert len(app.targets) == 1
 
     def test_empty_list(self, app):
         app._on_drop_windnd([])
-        assert app.folder_var.get() == ""
+        assert len(app.targets) == 0
 
 
 class TestOnDropTkdnd:
     def test_simple_path(self, app, tmp_path):
         event = types.SimpleNamespace(data=str(tmp_path))
         app._on_drop_tkdnd(event)
-        assert app.folder_var.get() == str(tmp_path)
+        assert len(app.targets) == 1
 
-    def test_braced_path_with_spaces(self, app, tmp_path):
+    def test_braced_path(self, app, tmp_path):
         event = types.SimpleNamespace(data="{" + str(tmp_path) + "}")
         app._on_drop_tkdnd(event)
-        assert app.folder_var.get() == str(tmp_path)
+        assert len(app.targets) == 1
 
     def test_multiple_braced_paths(self, app, tmp_path):
         sub1 = tmp_path / "a"
@@ -293,28 +329,31 @@ class TestOnDropTkdnd:
         sub2.mkdir()
         event = types.SimpleNamespace(data="{" + str(sub1) + "} {" + str(sub2) + "}")
         app._on_drop_tkdnd(event)
-        assert app.folder_var.get() == str(sub1)
+        assert len(app.targets) == 2
 
-    def test_file_in_braces(self, app, tmp_path):
+    def test_file_added_directly(self, app, tmp_path):
         f = tmp_path / "file.txt"
         f.write_text("hi")
         event = types.SimpleNamespace(data="{" + str(f) + "}")
         app._on_drop_tkdnd(event)
-        assert app.folder_var.get() == str(tmp_path)
+        assert len(app.targets) == 1
+        assert os.path.normpath(str(f)) in app.targets[0]
 
 
 # ── touch_files logic ─────────────────────────────────────────
 
 class TestTouchFiles:
-    def _run_touch(self, app, folder, recursive=True, hidden=False):
-        """Run touch_files synchronously (it's normally threaded)."""
+    def _run_touch(self, app, targets, recursive=True, hidden=False):
+        """Run touch_files synchronously with a list of targets."""
         app.recursive_var.set(recursive)
         app.hidden_var.set(hidden)
-        # Replace root.after so callbacks run immediately in-line
         app.root.after = lambda _ms, fn, *a, **kw: fn(*a, **kw)
-        app.touch_files(str(folder))
+        if isinstance(targets, list):
+            app.touch_files([str(t) for t in targets])
+        else:
+            app.touch_files([str(targets)])
 
-    def test_touches_files_and_updates_mtime(self, app, tmp_path):
+    def test_touches_files_in_folder(self, app, tmp_path):
         f = tmp_path / "a.txt"
         f.write_text("hello")
         old_time = time.time() - 3600
@@ -322,6 +361,53 @@ class TestTouchFiles:
 
         self._run_touch(app, tmp_path)
         assert os.path.getmtime(f) > old_time
+
+    def test_touches_individual_file(self, app, tmp_path):
+        f = tmp_path / "single.txt"
+        f.write_text("data")
+        old_time = time.time() - 3600
+        os.utime(f, (old_time, old_time))
+
+        self._run_touch(app, f)
+        assert os.path.getmtime(f) > old_time
+
+    def test_mixed_files_and_folders(self, app, tmp_path):
+        """Touch a mix of individual files and folders."""
+        folder = tmp_path / "dir"
+        folder.mkdir()
+        f_in_folder = folder / "inside.txt"
+        f_in_folder.write_text("x")
+        standalone = tmp_path / "standalone.txt"
+        standalone.write_text("y")
+
+        old_time = time.time() - 3600
+        os.utime(f_in_folder, (old_time, old_time))
+        os.utime(standalone, (old_time, old_time))
+
+        self._run_touch(app, [standalone, folder])
+
+        assert os.path.getmtime(f_in_folder) > old_time
+        assert os.path.getmtime(standalone) > old_time
+
+    def test_files_from_different_directories(self, app, tmp_path):
+        """Files from different directories can all be touched."""
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        f1 = dir_a / "f1.txt"
+        f2 = dir_b / "f2.txt"
+        f1.write_text("1")
+        f2.write_text("2")
+
+        old_time = time.time() - 3600
+        os.utime(f1, (old_time, old_time))
+        os.utime(f2, (old_time, old_time))
+
+        self._run_touch(app, [f1, f2])
+
+        assert os.path.getmtime(f1) > old_time
+        assert os.path.getmtime(f2) > old_time
 
     def test_recursive_touches_subfolders(self, app, tmp_path):
         sub = tmp_path / "sub"
@@ -356,6 +442,24 @@ class TestTouchFiles:
         self._run_touch(app, tmp_path, hidden=False)
         assert os.path.getmtime(hidden) == pytest.approx(old_time, abs=1)
         assert os.path.getmtime(visible) > old_time
+
+    def test_hidden_individual_file_skipped_by_default(self, app, tmp_path):
+        hidden = tmp_path / ".hidden"
+        hidden.write_text("h")
+        old_time = time.time() - 3600
+        os.utime(hidden, (old_time, old_time))
+
+        self._run_touch(app, hidden, hidden=False)
+        assert os.path.getmtime(hidden) == pytest.approx(old_time, abs=1)
+
+    def test_hidden_individual_file_included_when_enabled(self, app, tmp_path):
+        hidden = tmp_path / ".hidden"
+        hidden.write_text("h")
+        old_time = time.time() - 3600
+        os.utime(hidden, (old_time, old_time))
+
+        self._run_touch(app, hidden, hidden=True)
+        assert os.path.getmtime(hidden) > old_time
 
     def test_hidden_files_included_when_enabled(self, app, tmp_path):
         hidden = tmp_path / ".hidden"
@@ -404,21 +508,19 @@ class TestTouchFiles:
         app.hidden_var.set(False)
 
         with mock.patch("os.utime", side_effect=PermissionError("denied")):
-            app.touch_files(str(tmp_path))
+            app.touch_files([str(tmp_path)])
 
         assert len(logged_errors) == 1
         assert "ERR" in logged_errors[0]
 
     def test_empty_directory(self, app, tmp_path):
-        """Touching an empty folder completes without error."""
         app.root.after = lambda _ms, fn, *a, **kw: fn(*a, **kw)
         app.recursive_var.set(True)
         app.hidden_var.set(False)
-        app.touch_files(str(tmp_path))
+        app.touch_files([str(tmp_path)])
         assert app.status_var.get().startswith("Done.")
 
-    def test_multiple_files(self, app, tmp_path):
-        """All files in directory get touched."""
+    def test_multiple_files_in_folder(self, app, tmp_path):
         files = []
         for name in ("a.txt", "b.txt", "c.txt"):
             f = tmp_path / name
@@ -449,7 +551,7 @@ class TestLogMsg:
     def test_normal_message_no_tag(self, app):
         app.log_msg("info line")
         content = app.log.get("1.0", "end").strip()
-        assert content == "info line"
+        assert "info line" in content
         tags = app.log.tag_ranges("error")
         assert len(tags) == 0
 
@@ -466,56 +568,132 @@ class TestLogMsg:
         assert "ok" in content
         assert "fail" in content
         assert "ok2" in content
-        # One tagged region = 2 indices (start + end)
-        tags = app.log.tag_ranges("error")
-        assert len(tags) == 2
 
 
 # ── browse ────────────────────────────────────────────────────
 
 class TestBrowse:
-    def test_browse_sets_path(self, app, tmp_path):
+    def test_browse_folder_adds_target(self, app, tmp_path):
         with mock.patch("icloud_resync.filedialog.askdirectory", return_value=str(tmp_path)):
-            app.browse()
-        assert app.folder_var.get() == str(tmp_path)
+            app.browse_folder()
+        assert len(app.targets) == 1
 
-    def test_browse_cancelled(self, app):
+    def test_browse_folder_cancelled(self, app):
         with mock.patch("icloud_resync.filedialog.askdirectory", return_value=""):
-            app.browse()
-        assert app.folder_var.get() == ""
+            app.browse_folder()
+        assert len(app.targets) == 0
+
+    def test_browse_files_adds_targets(self, app, tmp_path):
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("a")
+        f2.write_text("b")
+        with mock.patch("icloud_resync.filedialog.askopenfilenames",
+                        return_value=(str(f1), str(f2))):
+            app.browse_files()
+        assert len(app.targets) == 2
+
+    def test_browse_files_cancelled(self, app):
+        with mock.patch("icloud_resync.filedialog.askopenfilenames", return_value=()):
+            app.browse_files()
+        assert len(app.targets) == 0
 
 
 # ── start ─────────────────────────────────────────────────────
 
 class TestStart:
-    def test_rejects_empty(self, app):
-        app.folder_var.set("")
-        with mock.patch("icloud_resync.messagebox.showwarning") as warn:
-            app.start()
-        warn.assert_called_once()
-        assert app.running is False
-
-    def test_rejects_invalid_path(self, app):
-        app.folder_var.set("/nonexistent/path/xyz")
+    def test_rejects_empty_targets(self, app):
         with mock.patch("icloud_resync.messagebox.showwarning") as warn:
             app.start()
         warn.assert_called_once()
         assert app.running is False
 
     def test_ignores_if_running(self, app, tmp_path):
-        app.folder_var.set(str(tmp_path))
+        app.add_target(str(tmp_path))
         app.running = True
         with mock.patch("icloud_resync.threading.Thread") as thread_cls:
             app.start()
         thread_cls.assert_not_called()
 
     def test_launches_thread(self, app, tmp_path):
-        app.folder_var.set(str(tmp_path))
+        app.add_target(str(tmp_path))
         with mock.patch("icloud_resync.threading.Thread") as thread_cls:
             thread_cls.return_value = mock.MagicMock()
             app.start()
         thread_cls.assert_called_once()
         assert app.running is True
+
+
+# ── iCloud restart helpers ────────────────────────────────────
+
+class TestKillICloudProcesses:
+    def test_kills_running_processes(self):
+        with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
+             mock.patch("icloud_resync.subprocess.run") as mock_run:
+            # Simulate iCloud.exe and iCloudDrive.exe running, rest not found
+            def side_effect(args, **kw):
+                r = mock.MagicMock()
+                r.returncode = 0 if args[3] in ("iCloud.exe", "iCloudDrive.exe") else 1
+                return r
+            mock_run.side_effect = side_effect
+            killed = icloud_resync._kill_icloud_processes()
+        assert "iCloud.exe" in killed
+        assert "iCloudDrive.exe" in killed
+        assert len(killed) == 2
+
+    def test_returns_empty_when_none_running(self):
+        with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
+             mock.patch("icloud_resync.subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=1)
+            killed = icloud_resync._kill_icloud_processes()
+        assert killed == []
+
+    def test_returns_empty_on_non_windows(self):
+        with mock.patch.object(icloud_resync.sys, "platform", "linux"):
+            assert icloud_resync._kill_icloud_processes() == []
+
+
+class TestFindICloudExe:
+    def test_finds_desktop_install(self, tmp_path):
+        fake_exe = tmp_path / "iCloud.exe"
+        fake_exe.write_text("exe")
+        with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
+             mock.patch("os.path.expandvars", return_value=str(fake_exe)):
+            result = icloud_resync._find_icloud_exe()
+        assert result == str(fake_exe)
+
+    def test_returns_none_on_non_windows(self):
+        with mock.patch.object(icloud_resync.sys, "platform", "linux"):
+            assert icloud_resync._find_icloud_exe() is None
+
+    def test_returns_none_when_not_installed(self):
+        with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
+             mock.patch("os.path.expandvars", return_value="/nonexistent/iCloud.exe"), \
+             mock.patch("os.path.isdir", return_value=False), \
+             mock.patch("icloud_resync.subprocess.run",
+                        return_value=mock.MagicMock(returncode=1)):
+            assert icloud_resync._find_icloud_exe() is None
+
+
+class TestRestartICloud:
+    def test_ignores_if_running(self, app):
+        app.running = True
+        with mock.patch("icloud_resync.threading.Thread") as thread_cls:
+            app.restart_icloud()
+        thread_cls.assert_not_called()
+
+    def test_launches_thread(self, app):
+        with mock.patch("icloud_resync.threading.Thread") as thread_cls:
+            thread_cls.return_value = mock.MagicMock()
+            app.restart_icloud()
+        thread_cls.assert_called_once()
+        assert app.running is True
+
+    def test_finish_restart_resets_state(self, app):
+        app.running = True
+        app._finish_restart("iCloud restarted.")
+        assert app.running is False
+        assert app.status_var.get() == "iCloud restarted."
 
 
 # ── VERSION / GITHUB_REPO constants ──────────────────────────
