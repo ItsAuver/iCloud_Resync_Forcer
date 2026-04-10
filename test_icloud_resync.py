@@ -665,26 +665,50 @@ class TestKillICloudProcesses:
         assert "iCloud_ReSyncTool.exe" not in running  # must not kill ourselves
 
 
-class TestFindICloudExe:
+class TestFindICloudLaunch:
     def test_finds_desktop_install(self, tmp_path):
         fake_exe = tmp_path / "iCloud.exe"
         fake_exe.write_text("exe")
         with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
              mock.patch("os.path.expandvars", return_value=str(fake_exe)):
-            result = icloud_resync._find_icloud_exe()
-        assert result == str(fake_exe)
+            result = icloud_resync._find_icloud_launch()
+        assert result == ("exe", str(fake_exe))
+
+    def test_finds_store_install(self):
+        with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
+             mock.patch("os.path.expandvars", return_value="/nonexistent/iCloud.exe"), \
+             mock.patch("icloud_resync.subprocess.run") as mock_run:
+            def side_effect(args, **kw):
+                r = mock.MagicMock()
+                cmd = " ".join(args)
+                if "where.exe" in cmd:
+                    r.returncode = 1
+                    r.stdout = ""
+                elif "Get-AppxPackageManifest" in cmd:
+                    r.returncode = 0
+                    r.stdout = "iCloud\n"
+                elif "PackageFamilyName" in cmd:
+                    r.returncode = 0
+                    r.stdout = "AppleInc.iCloud_abc123\n"
+                else:
+                    r.returncode = 1
+                    r.stdout = ""
+                return r
+            mock_run.side_effect = side_effect
+            result = icloud_resync._find_icloud_launch()
+        assert result == ("store", "AppleInc.iCloud_abc123!iCloud")
 
     def test_returns_none_on_non_windows(self):
         with mock.patch.object(icloud_resync.sys, "platform", "linux"):
-            assert icloud_resync._find_icloud_exe() is None
+            assert icloud_resync._find_icloud_launch() is None
 
     def test_returns_none_when_not_installed(self):
         with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
              mock.patch("os.path.expandvars", return_value="/nonexistent/iCloud.exe"), \
-             mock.patch("os.path.isdir", return_value=False), \
-             mock.patch("icloud_resync.subprocess.run",
-                        return_value=mock.MagicMock(returncode=1)):
-            assert icloud_resync._find_icloud_exe() is None
+             mock.patch("icloud_resync.subprocess.run") as mock_run:
+            r = mock.MagicMock(returncode=1, stdout="")
+            mock_run.return_value = r
+            assert icloud_resync._find_icloud_launch() is None
 
 
 class TestRestartICloud:

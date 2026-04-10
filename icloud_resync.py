@@ -285,11 +285,17 @@ class TouchApp:
         else:
             self.root.after(0, self.log_msg, "No running iCloud processes found.")
 
-        exe = _find_icloud_exe()
-        if exe:
+        launch = _find_icloud_launch()
+        if launch:
+            method, value = launch
             try:
-                subprocess.Popen([exe], creationflags=_NO_WINDOW)
-                self.root.after(0, self.log_msg, f"Started: {exe}")
+                if method == "store":
+                    subprocess.Popen(
+                        ["explorer.exe", f"shell:AppsFolder\\{value}"],
+                    )
+                else:
+                    subprocess.Popen([value], creationflags=_NO_WINDOW)
+                self.root.after(0, self.log_msg, f"Started: {value}")
                 msg = "iCloud restarted."
             except Exception as e:
                 self.root.after(0, lambda m=f"  ERR: Could not start iCloud — {e}": self.log_msg(m, error=True))
@@ -370,34 +376,23 @@ def _kill_icloud_processes():
     return killed
 
 
-def _find_icloud_exe():
-    """Locate the iCloud executable to relaunch it."""
+def _find_icloud_launch():
+    """Locate how to launch iCloud.  Returns (method, value) or None.
+
+    method is "exe" (value = path) or "store" (value = app user model ID).
+    """
     if sys.platform != "win32":
         return None
 
-    # Desktop (MSI) install
+    # Desktop (MSI) install — direct exe paths
     candidates = [
         os.path.expandvars(r"%ProgramFiles%\Apple\iCloud\iCloud.exe"),
         os.path.expandvars(r"%ProgramFiles(x86)%\Apple\Internet Services\iCloud.exe"),
         os.path.expandvars(r"%ProgramFiles%\Apple\Internet Services\iCloud.exe"),
     ]
-
-    # Microsoft Store install — search WindowsApps for the package
-    win_apps = os.path.expandvars(r"%ProgramFiles%\WindowsApps")
-    if os.path.isdir(win_apps):
-        try:
-            for entry in os.listdir(win_apps):
-                if "AppleInc.iCloud" in entry:
-                    store_exe = os.path.join(win_apps, entry, "iCloud", "iCloud.exe")
-                    candidates.insert(0, store_exe)
-                    alt = os.path.join(win_apps, entry, "iCloud.exe")
-                    candidates.insert(1, alt)
-        except PermissionError:
-            pass
-
     for path in candidates:
         if os.path.isfile(path):
-            return path
+            return ("exe", path)
 
     # Fallback: search PATH
     try:
@@ -406,7 +401,33 @@ def _find_icloud_exe():
             capture_output=True, text=True, creationflags=_NO_WINDOW,
         )
         if result.returncode == 0:
-            return result.stdout.strip().splitlines()[0]
+            return ("exe", result.stdout.strip().splitlines()[0])
+    except Exception:
+        pass
+
+    # Microsoft Store install — query for the app's user model ID
+    try:
+        ps_cmd = (
+            "Get-AppxPackage -Name '*iCloud*' | "
+            "Get-AppxPackageManifest | "
+            "ForEach-Object { $_.Package.Applications.Application } | "
+            "Select-Object -ExpandProperty Id -First 1"
+        )
+        pkg_cmd = (
+            "(Get-AppxPackage -Name '*iCloud*').PackageFamilyName"
+        )
+        app_id_result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True, creationflags=_NO_WINDOW,
+        )
+        pkg_result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", pkg_cmd],
+            capture_output=True, text=True, creationflags=_NO_WINDOW,
+        )
+        app_id = app_id_result.stdout.strip()
+        pkg_family = pkg_result.stdout.strip()
+        if app_id and pkg_family:
+            return ("store", f"{pkg_family}!{app_id}")
     except Exception:
         pass
 
@@ -596,6 +617,7 @@ class UpdateDialog(tk.Toplevel):
                 f'    timeout /t 1 /nobreak >NUL\n'
                 f'    goto wait\n'
                 f')\n'
+                f'timeout /t 3 /nobreak >NUL\n'
                 f'start "" "{exe}"\n'
                 f'del "%~f0"\n'
             )
