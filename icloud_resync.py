@@ -99,7 +99,9 @@ class TouchApp:
 
         self.btn_restart_icloud = ttk.Button(frame_action, text="Restart iCloud",
                                              command=self.restart_icloud)
-        self.btn_restart_icloud.pack(side="left")
+        self.btn_restart_icloud.pack(side="left", padx=(0, 4))
+
+        ttk.Button(frame_action, text="Guide", command=self.show_guide).pack(side="left")
 
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(frame_action, textvariable=self.status_var,
@@ -314,6 +316,84 @@ class TouchApp:
         self.btn_run.configure(state="normal")
         self.status_var.set(msg)
         self.running = False
+
+    def show_guide(self):
+        guide = tk.Toplevel(self.root)
+        guide.title("How to Use This Program")
+        guide.resizable(False, False)
+        guide.grab_set()
+
+        text = tk.Text(guide, wrap="word", font=("Segoe UI", 10),
+                       padx=16, pady=12, width=58, height=28,
+                       relief="flat", bg=guide.cget("bg"))
+        text.pack(fill="both", expand=True)
+
+        bold = ("Segoe UI", 10, "bold")
+        heading = ("Segoe UI", 12, "bold")
+        text.tag_configure("h", font=heading, spacing3=4)
+        text.tag_configure("b", font=bold)
+        text.tag_configure("body", spacing1=2, spacing3=2)
+
+        def h(s):
+            text.insert("end", s + "\n", "h")
+
+        def b(s):
+            text.insert("end", s, "b")
+
+        def t(s):
+            text.insert("end", s, "body")
+
+        h("What does this program do?")
+        t("Sometimes iCloud gets stuck and stops syncing your files. "
+          "This tool fixes that by gently \"nudging\" your files so "
+          "iCloud notices them again and uploads them.\n\n"
+          "It does NOT change the contents of your files. "
+          "It only updates the date so iCloud thinks they are new.\n\n")
+
+        h("Step 1 -- Add your files or folders")
+        b("Drag and drop: ")
+        t("Drag files or folders from File Explorer straight "
+          "into the white list at the top of the window.\n\n")
+        b("Browse: ")
+        t("Click \"Add Folder\" or \"Add Files\" to pick them "
+          "from a dialog.\n\n"
+          "You can add as many items as you like. "
+          "To remove something, select it in the list and click "
+          "\"Remove Selected\", or click \"Clear All\" to start over.\n\n")
+
+        h("Step 2 -- Choose your options")
+        b("Include subfolders: ")
+        t("When checked, the tool will also process files inside "
+          "any folders within the folders you added. "
+          "Leave this on unless you only want the top level.\n\n")
+        b("Include hidden files: ")
+        t("Hidden files (whose names start with a dot) are "
+          "skipped by default. You usually don't need to change this.\n\n")
+
+        h("Step 3 -- Click \"Touch All Files\"")
+        t("The tool will go through every file and nudge it. "
+          "Progress and any errors will appear in the Log area "
+          "at the bottom.\n\n")
+
+        h("Restart iCloud")
+        t("If syncing is still stuck after touching your files, "
+          "click \"Restart iCloud\". This will close iCloud completely "
+          "and reopen it, which often clears stubborn sync issues.\n\n")
+
+        h("Tips")
+        t("  - You can use this tool as many times as you need.\n"
+          "  - It's safe to run on any folder, not just iCloud folders.\n"
+          "  - If something goes wrong, errors appear in red in the Log.")
+
+        text.configure(state="disabled")
+
+        btn = ttk.Button(guide, text="Got it!", command=guide.destroy)
+        btn.pack(pady=(0, 12))
+
+        guide.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - guide.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - guide.winfo_height()) // 2
+        guide.geometry(f"+{x}+{y}")
 
 
 # ── iCloud process helpers ────────────────────────────────────
