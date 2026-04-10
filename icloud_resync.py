@@ -344,6 +344,9 @@ def _get_running_icloud_processes():
                 continue
             name = line.split(",")[0].strip('"')
             name_lower = name.lower()
+            # Skip our own process
+            if "resync" in name_lower:
+                continue
             if "icloud" in name_lower or name in ICLOUD_PROCESS_NAMES:
                 running.add(name)
         return running

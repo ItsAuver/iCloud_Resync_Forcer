@@ -652,6 +652,7 @@ class TestKillICloudProcesses:
         fake_output = (
             '"iCloud.exe","1234","Console","1","98,000 K"\n'
             '"iCloudHome.exe","5678","Console","1","85,000 K"\n'
+            '"iCloud_ReSyncTool.exe","4321","Console","1","18,000 K"\n'
             '"explorer.exe","9999","Console","1","50,000 K"\n'
         )
         with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
@@ -661,6 +662,7 @@ class TestKillICloudProcesses:
         assert "iCloud.exe" in running
         assert "iCloudHome.exe" in running
         assert "explorer.exe" not in running
+        assert "iCloud_ReSyncTool.exe" not in running  # must not kill ourselves
 
 
 class TestFindICloudExe:
