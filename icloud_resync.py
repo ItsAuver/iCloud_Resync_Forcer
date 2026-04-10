@@ -47,9 +47,19 @@ class TouchApp:
         self.running = False
         self.targets = []  # list of file/folder paths
 
+        # --- Header with Guide button ---
+        frame_header = ttk.Frame(root)
+        frame_header.pack(fill="x", padx=12, pady=(8, 0))
+
+        self.btn_guide = tk.Button(frame_header, text="Guide", command=self.show_guide,
+                                   bg="#4CAF50", fg="white", font=("Segoe UI", 9, "bold"),
+                                   activebackground="#388E3C", activeforeground="white",
+                                   relief="raised", padx=10, pady=2, cursor="hand2")
+        self.btn_guide.pack(side="right")
+
         # --- Target list ---
         frame_top = ttk.LabelFrame(root, text="Targets (drag and drop files/folders here)", padding=10)
-        frame_top.pack(fill="x", padx=12, pady=(12, 6))
+        frame_top.pack(fill="x", padx=12, pady=(6, 6))
 
         list_frame = ttk.Frame(frame_top)
         list_frame.pack(fill="x")
@@ -679,12 +689,11 @@ class UpdateDialog(tk.Toplevel):
     def _restart_prompt(self):
         messagebox.showinfo(
             "Update complete",
-            "The update has been installed.\n"
-            "Please reopen the application to use the new version.",
+            "The update has been installed successfully!\n\n"
+            "Please close and reopen the program to use the new version.",
             parent=self,
         )
-        self.parent.destroy()
-        sys.exit(0)
+        self.destroy()
 
     def _show_error(self, error):
         messagebox.showerror("Update failed", f"Could not update:\n{error}", parent=self)
