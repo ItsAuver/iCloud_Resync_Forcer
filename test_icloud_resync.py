@@ -15,9 +15,9 @@ import icloud_resync
 # We create one hidden root per test that needs it.
 
 
-@pytest.fixture
-def tk_root():
-    """Create a real but hidden Tk root for widget tests."""
+@pytest.fixture(scope="module")
+def _tk_root_shared():
+    """Single hidden Tk root for the entire test module (avoids Tk lifecycle issues)."""
     import tkinter as tk
     try:
         root = tk.Tk()
@@ -26,6 +26,12 @@ def tk_root():
         pytest.skip("No display available for Tk tests")
     yield root
     root.destroy()
+
+
+@pytest.fixture
+def tk_root(_tk_root_shared):
+    """Per-test access to the shared Tk root."""
+    return _tk_root_shared
 
 
 @pytest.fixture
