@@ -629,28 +629,38 @@ class TestStart:
 class TestKillICloudProcesses:
     def test_kills_running_processes(self):
         with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
+             mock.patch("icloud_resync._get_running_icloud_processes",
+                        return_value={"iCloud.exe", "iCloudHome.exe"}), \
              mock.patch("icloud_resync.subprocess.run") as mock_run:
-            # Simulate iCloud.exe and iCloudDrive.exe running, rest not found
-            def side_effect(args, **kw):
-                r = mock.MagicMock()
-                r.returncode = 0 if args[3] in ("iCloud.exe", "iCloudDrive.exe") else 1
-                return r
-            mock_run.side_effect = side_effect
+            mock_run.return_value = mock.MagicMock(returncode=0)
             killed = icloud_resync._kill_icloud_processes()
         assert "iCloud.exe" in killed
-        assert "iCloudDrive.exe" in killed
+        assert "iCloudHome.exe" in killed
         assert len(killed) == 2
 
     def test_returns_empty_when_none_running(self):
         with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
-             mock.patch("icloud_resync.subprocess.run") as mock_run:
-            mock_run.return_value = mock.MagicMock(returncode=1)
+             mock.patch("icloud_resync._get_running_icloud_processes", return_value=set()):
             killed = icloud_resync._kill_icloud_processes()
         assert killed == []
 
     def test_returns_empty_on_non_windows(self):
         with mock.patch.object(icloud_resync.sys, "platform", "linux"):
             assert icloud_resync._kill_icloud_processes() == []
+
+    def test_get_running_detects_icloud_processes(self):
+        fake_output = (
+            '"iCloud.exe","1234","Console","1","98,000 K"\n'
+            '"iCloudHome.exe","5678","Console","1","85,000 K"\n'
+            '"explorer.exe","9999","Console","1","50,000 K"\n'
+        )
+        with mock.patch.object(icloud_resync.sys, "platform", "win32"), \
+             mock.patch("icloud_resync.subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0, stdout=fake_output)
+            running = icloud_resync._get_running_icloud_processes()
+        assert "iCloud.exe" in running
+        assert "iCloudHome.exe" in running
+        assert "explorer.exe" not in running
 
 
 class TestFindICloudExe:

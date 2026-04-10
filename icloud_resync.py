@@ -288,7 +288,7 @@ class TouchApp:
         exe = _find_icloud_exe()
         if exe:
             try:
-                subprocess.Popen([exe], creationflags=0x00000008 if sys.platform == "win32" else 0)
+                subprocess.Popen([exe], creationflags=_NO_WINDOW)
                 self.root.after(0, self.log_msg, f"Started: {exe}")
                 msg = "iCloud restarted."
             except Exception as e:
@@ -312,26 +312,55 @@ class TouchApp:
 
 # ── iCloud process helpers ────────────────────────────────────
 
-# Process names that belong to iCloud on Windows
+# CREATE_NO_WINDOW prevents console pop-ups from subprocess calls
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+# Process names that belong to iCloud on Windows (explicit list)
 ICLOUD_PROCESS_NAMES = [
     "iCloud.exe",
     "iCloudDrive.exe",
+    "iCloudHome.exe",
     "iCloudPhotos.exe",
     "iCloudServices.exe",
+    "iCloud Keychain Sync.exe",
     "ApplePhotoStreams.exe",
     "APSDaemon.exe",
 ]
+
+
+def _get_running_icloud_processes():
+    """Return a set of iCloud-related process image names currently running."""
+    if sys.platform != "win32":
+        return set()
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, creationflags=_NO_WINDOW,
+        )
+        running = set()
+        for line in result.stdout.splitlines():
+            # CSV format: "ImageName","PID",...
+            if not line:
+                continue
+            name = line.split(",")[0].strip('"')
+            name_lower = name.lower()
+            if "icloud" in name_lower or name in ICLOUD_PROCESS_NAMES:
+                running.add(name)
+        return running
+    except Exception:
+        return set()
 
 
 def _kill_icloud_processes():
     """Kill all running iCloud processes.  Returns list of names that were killed."""
     if sys.platform != "win32":
         return []
+    targets = _get_running_icloud_processes()
     killed = []
-    for name in ICLOUD_PROCESS_NAMES:
+    for name in targets:
         result = subprocess.run(
             ["taskkill", "/F", "/IM", name],
-            capture_output=True, text=True,
+            capture_output=True, text=True, creationflags=_NO_WINDOW,
         )
         if result.returncode == 0:
             killed.append(name)
@@ -363,15 +392,15 @@ def _find_icloud_exe():
         except PermissionError:
             pass
 
-    # Also try the shell start approach via App URI
     for path in candidates:
         if os.path.isfile(path):
             return path
 
-    # Fallback: launch via shell protocol (works for Store version)
+    # Fallback: search PATH
     try:
         result = subprocess.run(
-            ["where.exe", "iCloud.exe"], capture_output=True, text=True,
+            ["where.exe", "iCloud.exe"],
+            capture_output=True, text=True, creationflags=_NO_WINDOW,
         )
         if result.returncode == 0:
             return result.stdout.strip().splitlines()[0]
@@ -550,8 +579,33 @@ class UpdateDialog(tk.Toplevel):
             parent=self,
         )
         exe = sys.executable
+        pid = os.getpid()
+
+        if sys.platform == "win32":
+            # Use a temporary batch script that waits for this process to exit
+            # before relaunching — avoids the _MEI temp dir cleanup race.
+            bat_fd, bat_path = tempfile.mkstemp(suffix=".bat")
+            script = (
+                f'@echo off\n'
+                f':wait\n'
+                f'tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL\n'
+                f'if not errorlevel 1 (\n'
+                f'    timeout /t 1 /nobreak >NUL\n'
+                f'    goto wait\n'
+                f')\n'
+                f'start "" "{exe}"\n'
+                f'del "%~f0"\n'
+            )
+            os.write(bat_fd, script.encode())
+            os.close(bat_fd)
+            subprocess.Popen(
+                ["cmd.exe", "/C", bat_path],
+                creationflags=_NO_WINDOW,
+            )
+        else:
+            subprocess.Popen([exe] + sys.argv[1:])
+
         self.parent.destroy()
-        subprocess.Popen([exe] + sys.argv[1:])
         sys.exit(0)
 
     def _show_error(self, error):
