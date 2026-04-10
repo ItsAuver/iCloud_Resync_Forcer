@@ -109,9 +109,7 @@ class TouchApp:
 
         self.btn_restart_icloud = ttk.Button(frame_action, text="Restart iCloud",
                                              command=self.restart_icloud)
-        self.btn_restart_icloud.pack(side="left", padx=(0, 4))
-
-        ttk.Button(frame_action, text="Guide", command=self.show_guide).pack(side="left")
+        self.btn_restart_icloud.pack(side="left")
 
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(frame_action, textvariable=self.status_var,
@@ -333,10 +331,16 @@ class TouchApp:
         guide.resizable(False, False)
         guide.grab_set()
 
-        text = tk.Text(guide, wrap="word", font=("Segoe UI", 10),
-                       padx=16, pady=12, width=58, height=28,
+        text_frame = ttk.Frame(guide)
+        text_frame.pack(fill="both", expand=True)
+
+        text = tk.Text(text_frame, wrap="word", font=("Segoe UI", 10),
+                       padx=16, pady=12, width=58, height=22,
                        relief="flat", bg=guide.cget("bg"))
-        text.pack(fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(text_frame, command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
 
         bold = ("Segoe UI", 10, "bold")
         heading = ("Segoe UI", 12, "bold")
