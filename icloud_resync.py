@@ -599,37 +599,10 @@ class UpdateDialog(tk.Toplevel):
     def _restart_prompt(self):
         messagebox.showinfo(
             "Update complete",
-            "The application has been updated.\nIt will now restart.",
+            "The update has been installed.\n"
+            "Please reopen the application to use the new version.",
             parent=self,
         )
-        exe = sys.executable
-        pid = os.getpid()
-
-        if sys.platform == "win32":
-            # Use a temporary batch script that waits for this process to exit
-            # before relaunching — avoids the _MEI temp dir cleanup race.
-            bat_fd, bat_path = tempfile.mkstemp(suffix=".bat")
-            script = (
-                f'@echo off\n'
-                f':wait\n'
-                f'tasklist /FI "PID eq {pid}" 2>NUL | find "{pid}" >NUL\n'
-                f'if not errorlevel 1 (\n'
-                f'    timeout /t 1 /nobreak >NUL\n'
-                f'    goto wait\n'
-                f')\n'
-                f'timeout /t 3 /nobreak >NUL\n'
-                f'start "" "{exe}"\n'
-                f'del "%~f0"\n'
-            )
-            os.write(bat_fd, script.encode())
-            os.close(bat_fd)
-            subprocess.Popen(
-                ["cmd.exe", "/C", bat_path],
-                creationflags=_NO_WINDOW,
-            )
-        else:
-            subprocess.Popen([exe] + sys.argv[1:])
-
         self.parent.destroy()
         sys.exit(0)
 
